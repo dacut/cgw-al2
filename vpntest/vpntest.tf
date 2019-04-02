@@ -1,11 +1,37 @@
 variable "region" { default = "us-west-2" }
 variable "target_vpc_cidr" { default = "10.0.0.0/16" }
+variable "keypair" {}
+variable "target_instance_type" { default = "t3.nano" }
 
 provider "aws" {
     region = "${var.region}"
 }
 
 data "aws_availability_zones" "available" {}
+data "aws_ami" "amzn2" {
+    most_recent = true
+    filter {
+        name = "architecture"
+        values = ["x86_64"]
+    }
+
+    filter {
+        name = "ena-support"
+        values = ["true"]
+    }
+
+    filter {
+        name = "name"
+        values = ["amzn2-ami-hvm-2.0*"]
+    }
+
+    filter {
+        name = "virtualization-type"
+        values = ["hvm"]
+    }
+
+    owners = ["137112412989"]
+}
 
 resource "aws_vpc" "target_vpc" {
     cidr_block = "${var.target_vpc_cidr}"
@@ -62,3 +88,64 @@ resource "aws_route" "target_egress_v6" {
     gateway_id = "${aws_internet_gateway.target_igw.id}"
 }
 
+resource "aws_security_group" "target_vpc_debugging_sg" {
+    name = "VPN Test Debugging"
+    description = "VPN Test Debugging -- allow SSH, ICMP"
+    vpc_id = "${aws_vpc.target_vpc.id}"
+
+    ingress {
+        protocol = "tcp"
+        from_port = 22
+        to_port = 22
+        cidr_blocks = ["0.0.0.0/0"]
+        ipv6_cidr_blocks = ["::/0"]
+        description = "SSH from anywhere"
+    }
+
+    ingress {
+        protocol = "icmp"
+        from_port = -1
+        to_port = -1
+        cidr_blocks = ["0.0.0.0/0"]
+        description = "ICMPv4 from anywhere"
+    }
+
+    ingress {
+        protocol = "icmpv6"
+        from_port = -1
+        to_port = -1
+        ipv6_cidr_blocks = ["::/0"]
+        description = "ICMPv6 from anywhere"
+    }
+
+    egress {
+        protocol = "-1"
+        from_port = 0
+        to_port = 0
+        cidr_blocks = ["0.0.0.0/0"]
+        ipv6_cidr_blocks = ["::/0"]
+        description = "Egress anywhere"
+    }
+}
+resource "aws_instance" "target_instance" {
+    ami = "${data.aws_ami.amzn2.id}"
+    instance_type = "${var.target_instance_type}"
+    key_name = "${var.keypair}"
+    monitoring = true
+    vpc_security_group_ids = ["${aws_security_group.target_vpc_debugging_sg.id}"]
+    subnet_id = "${aws_subnet.target_subnet_a.id}"
+    associate_public_ip_address = true
+    ipv6_address_count = 1
+    tags = {
+        Name = "VPN Test Target"
+    }
+    user_data = "${file("${path.module}/target_instance_init.sh")}"
+    volume_tags = {
+        Name = "VPN Test Target"
+    }
+    root_block_device = {
+        volume_type = "gp2"
+        volume_size = 20
+        delete_on_termination = true
+    }
+}
