@@ -42,3 +42,23 @@ resource "aws_subnet" "target_subnet_b" {
         Name = "VPN Test Target B"
     }
 }
+
+resource "aws_internet_gateway" "target_igw" {
+    vpc_id = "${aws_vpc.target_vpc.id}"
+    tags = {
+        Name = "VPN Test Target"
+    }
+}
+
+resource "aws_route" "target_egress_v4" {
+    route_table_id = "${aws_vpc.target_vpc.default_route_table_id}"
+    destination_cidr_block = "0.0.0.0/0"
+    gateway_id = "${aws_internet_gateway.target_igw.id}"
+}
+
+resource "aws_route" "target_egress_v6" {
+    route_table_id = "${aws_vpc.target_vpc.default_route_table_id}"
+    destination_ipv6_cidr_block = "::/0"
+    gateway_id = "${aws_internet_gateway.target_igw.id}"
+}
+
