@@ -1,38 +1,3 @@
-variable "region" { default = "us-west-2" }
-variable "target_vpc_cidr" { default = "10.0.0.0/16" }
-variable "keypair" {}
-variable "target_instance_type" { default = "t3.nano" }
-
-provider "aws" {
-    region = "${var.region}"
-}
-
-data "aws_availability_zones" "available" {}
-data "aws_ami" "amzn2" {
-    most_recent = true
-    filter {
-        name = "architecture"
-        values = ["x86_64"]
-    }
-
-    filter {
-        name = "ena-support"
-        values = ["true"]
-    }
-
-    filter {
-        name = "name"
-        values = ["amzn2-ami-hvm-2.0*"]
-    }
-
-    filter {
-        name = "virtualization-type"
-        values = ["hvm"]
-    }
-
-    owners = ["137112412989"]
-}
-
 resource "aws_vpc" "target_vpc" {
     cidr_block = "${var.target_vpc_cidr}"
     enable_dns_support = true
@@ -139,7 +104,7 @@ resource "aws_instance" "target_instance" {
     tags = {
         Name = "VPN Test Target"
     }
-    user_data = "${file("${path.module}/target_instance_init.sh")}"
+    user_data = "${file("${path.module}/instance_init.sh")}"
     volume_tags = {
         Name = "VPN Test Target"
     }
