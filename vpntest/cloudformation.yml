@@ -1,0 +1,860 @@
+AWSTemplateFormatVersion: 2010-09-09
+Parameters:
+  pSourceVpcCidr:
+    Type: String
+    Default: 10.1.0.0/16
+    Description: The CIDR range for the source VPC.
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+  pTargetVpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+    Description: The CIDR range for the target VPC.
+    AllowedPattern: "^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\\/([0-9]|[1-2][0-9]|3[0-2]))$"
+  pKeypair:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: The SSH keypair to provision on the EC2 instances.
+  pStandardAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Description: The default AMI to launch instances with; this will be used unless you specify a custom AMI below.
+  pCustomAmi:
+    Type: String
+    Default: ""
+    Description: If specified, the custom AMI to use for launching instances with.
+  pCgwInstanceType:
+    Type: String
+    Default: t3a.medium
+    Description: The instance type to use for the CGW.
+  pSourcePingInstanceType:
+    Type: String
+    Default: t3a.nano
+    Description: The instance type to use for the source ping instance.
+  pTargetPingInstanceType:
+    Type: String
+    Default: t3a.nano
+    Description: The instance type to use for the target ping instance.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Network Parameters
+        Parameters:
+          - pSourceVpcCidr
+          - pTargetVpcCidr
+      - Label:
+          default: EC2 Parameters
+        Parameters:
+          - pKeypair
+          - pStandardAmi
+          - pCustomAmi
+          - pCgwInstanceType
+          - pSourcePingInstanceType
+          - pTargetPingInstanceType
+    ParameterLabels:
+      pSourceVpcCidr:
+        default: Source VPC CIDR
+      pTargetVpcCidr:
+        default: Target VPC CIDR
+      pKeypair:
+        default: SSH keypair
+      pStandardAmi:
+        default: Amazon Linux 2 AMI
+      pCustomAmi:
+        default: Custom AMI override
+      pCgwInstanceType:
+        default: CGW instance type
+      pSourcePingInstanceType:
+        default: Source ping instance type
+      pTargetPingInstanceType:
+        default: Target ping instance type
+Conditions:
+  cUseCustomAmi: !Not [!Equals [!Ref pCustomAmi, ""]]
+Resources:
+  rSourceVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pSourceVpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: VPN Test Source
+  rSourceVpcIpv6:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref rSourceVpc
+  rSourceSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn: [ rSourceVpcIpv6 ]
+    Properties:
+      # AssignIpv6AddressOnCreati on: false # EC2/CFN bug: https://amzn.to/2wcS7hn
+      AvailabilityZone: !Select [0, !GetAZs { "Ref": "AWS::Region" }]
+      CidrBlock: !Select [0, !Cidr [!Ref pSourceVpcCidr, 2, 12]]
+      Ipv6CidrBlock: !Select [0, !Cidr [!Select [0, !GetAtt rSourceVpc.Ipv6CidrBlocks], 2, 64]]
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref rSourceVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Source A
+  rSourceSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn: [ rSourceVpcIpv6 ]
+    Properties:
+      # AssignIpv6AddressOnCreation: false
+      AvailabilityZone: !Select [1, !GetAZs { "Ref": "AWS::Region" }]
+      CidrBlock: !Select [1, !Cidr [!Ref pSourceVpcCidr, 2, 12]]
+      Ipv6CidrBlock: !Select [1, !Cidr [!Select [0, !GetAtt rSourceVpc.Ipv6CidrBlocks], 2, 64]]
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref rSourceVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Source B
+  rSourceIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: VPN Test Source
+  rSourceIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref rSourceVpc
+      InternetGatewayId: !Ref rSourceIgw
+  rSourceRouteTable: # CFN issue: https://amzn.to/2HPRzmG
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rSourceVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Source
+  rSourceRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rSourceRouteTable
+      SubnetId: !Ref rSourceSubnetA
+  rSourceRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rSourceRouteTable
+      SubnetId: !Ref rSourceSubnetB
+  rSourceEgressV4:
+    Type: AWS::EC2::Route
+    DependsOn: [ rSourceIgwAttachment ]
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref rSourceRouteTable
+      GatewayId: !Ref rSourceIgw
+  rSourceEgressV6:
+    Type: AWS::EC2::Route
+    DependsOn: [ rSourceIgwAttachment ]
+    Properties:
+      DestinationIpv6CidrBlock: "::/0"
+      RouteTableId: !Ref rSourceRouteTable
+      GatewayId: !Ref rSourceIgw
+  rSourceToTarget:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: !Ref pTargetVpcCidr
+      RouteTableId: !Ref rSourceRouteTable
+      NetworkInterfaceId: !Ref rCgwEni
+  rSourceDebuggingSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: VPN Test Debugging
+      GroupDescription: "VPN Test Debugging -- allow SSH, ICMP"
+      VpcId: !Ref rSourceVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH from anywhere
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIpv6: "::/0"
+          Description: SSH from anywhere
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: ICMPv4 from anywhere
+        - IpProtocol: icmpv6
+          FromPort: -1
+          ToPort: -1
+          CidrIpv6: "::/0"
+          Description: ICMPv6 from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+          Description: Egress anywhere
+        - IpProtocol: "-1"
+          FromPort: 0
+          ToPort: 0
+          CidrIpv6: "::/0"
+          Description: Egress anywhere
+  rSourceVpnSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: VPN
+      GroupDescription: "VPN -- allow IPsec"
+      VpcId: !Ref rSourceVpc
+      SecurityGroupIngress:
+        - IpProtocol: "50"
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+          Description: IPSec ESP
+        - IpProtocol: "50"
+          FromPort: 0
+          ToPort: 0
+          CidrIpv6: "::/0"
+          Description: IPSec ESP
+        - IpProtocol: "51"
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+          Description: IPSec AH
+        - IpProtocol: "51"
+          FromPort: 0
+          ToPort: 0
+          CidrIpv6: "::/0"
+          Description: IPSec AH
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIp: 0.0.0.0/0
+          Description: IPSec IKE
+        - IpProtocol: udp
+          FromPort: 500
+          ToPort: 500
+          CidrIpv6: "::/0"
+          Description: IPSec IKE
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIp: 0.0.0.0/0
+          Description: IPSec IKE NAT
+        - IpProtocol: udp
+          FromPort: 4500
+          ToPort: 4500
+          CidrIpv6: "::/0"
+          Description: IPSec IKE NAT
+  rCgwEni:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      GroupSet:
+        - !Ref rSourceDebuggingSg
+        - !Ref rSourceVpnSg
+      InterfaceType: interface
+      SourceDestCheck: false
+      SubnetId: !Ref rSourceSubnetA
+  rCgwEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+  rCgwEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt rCgwEip.AllocationId
+      NetworkInterfaceId: !Ref rCgwEni
+  rSourcePingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !If [cUseCustomAmi, !Ref pCustomAmi, !Ref pStandardAmi]
+      InstanceType: !Ref pSourcePingInstanceType
+      KeyName: !Ref pKeypair
+      Monitoring: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 20
+            VolumeType: gp2
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref rSourceDebuggingSg]
+          Ipv6AddressCount: 1
+          SubnetId: !Ref rSourceSubnetA
+      Tags:
+        - Key: Name
+          Value: VPN Test Source
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -x
+          yum update -y
+          yum install -y ltrace python3 strace tcpdump trousers util-linux-user zsh
+          chsh -s /bin/zsh
+          chsh -s /bin/zsh ec2-user
+          if [[ ! -d /home/ec2-user ]]; then mkdir -p /home/ec2-user; chown 1000:1000 /home/ec2-user; fi
+          cat > /home/ec2-user/.zshrc <<.EOF
+          autoload -Uz compinit
+          compinit
+          PROMPT="%B%! %n@%m %3/%#%b "
+          export LESS=-XR
+          .EOF
+
+          cp /home/ec2-user/.zshrc /root/.zshrc
+          chown ec2-user:ec2-user /home/ec2-user/.zshrc || chown 1000:1000 /home/ec2-user/.zshrc
+          chown root:root /root/.zshrc
+  rCgwRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Action: sts:AssumeRole
+          Principal:
+            Service: ec2.amazonaws.com
+          Effect: Allow
+  rCgwRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      Roles: [ !Ref rCgwRole ]
+      PolicyName: Describe-VPN
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          Action: ec2:DescribeVpnConnections
+          Effect: Allow
+          Resource: "*"
+  rCgwProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [ !Ref rCgwRole ]
+  rCgwInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !If [cUseCustomAmi, !Ref pCustomAmi, !Ref pStandardAmi]
+      IamInstanceProfile: !Ref rCgwProfile
+      InstanceType: !Ref pCgwInstanceType
+      KeyName: !Ref pKeypair
+      Monitoring: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 20
+            VolumeType: gp2
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          DeleteOnTermination: false
+          NetworkInterfaceId: !Ref rCgwEni
+      Tags:
+        - Key: Name
+          Value: VPN CGW
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash -x
+            yum update -y
+            yum install -y ltrace python3 strace tcpdump trousers util-linux-user zsh
+            chsh -s /bin/zsh
+            chsh -s /bin/zsh ec2-user
+            if [[ ! -d /home/ec2-user ]]; then mkdir -p /home/ec2-user; chown 1000:1000 /home/ec2-user; fi
+            cat > /home/ec2-user/.zshrc <<.EOF
+            autoload -Uz compinit
+            compinit
+            PROMPT="%B%! %n@%m %3/%#%b "
+            export LESS=-XR
+            .EOF
+
+            cp /home/ec2-user/.zshrc /root/.zshrc
+            chown ec2-user:ec2-user /home/ec2-user/.zshrc || chown 1000:1000 /home/ec2-user/.zshrc
+            chown root:root /root/.zshrc
+            cat > /etc/sysconfig/network-scripts/ifup-awsvpn <<".EOF"
+            #!/bin/bash -x
+            # Bring up an AWS VPN interface.
+
+            . /etc/init.d/functions
+            cd /etc/sysconfig/network-scripts
+            . ./network-functions
+            [ -f ../network ] && . ../network
+            CONFIG=$1
+            need_config "$CONFIG"
+            source_config
+
+            if [ -z "$OUTSIDE_SRC_IPV4" ]; then
+                net_log $"Device $DEVICE does not have OUTSIDE_SRC_IPV4 specified."
+                exit 1;
+            fi;
+
+            if [ -z "$OUTSIDE_DST_IPV4" ]; then
+                net_log $"Device $DEVICE does not have OUTSIDE_DST_IPV4 specified."
+                exit 1;
+            fi;
+
+            if [ -z "$INSIDE_SRC_IPV4" ]; then
+                net_log $"Device $DEVICE does not have INSIDE_SRC_IPV4 specified."
+                exit 1;
+            fi;
+
+            if [ -z "$INSIDE_DST_IPV4" ]; then
+                net_log $"Device $DEVICE does not have INSIDE_DST_IPV4 specified."
+                exit 1;
+            fi;
+
+            # Make sure CIDR blocks are on the INSIDE_*_IPV4 variables; otherwise default
+            # to /30.
+            if ! echo "$INSIDE_SRC_IPV4" | egrep '/[0-9]+$' > /dev/null; then
+                INSIDE_SRC_IPV4="$INSIDE_SRC_IPV4/30";
+            fi;
+
+            if ! echo "$INSIDE_DST_IPV4" | egrep '/[0-9]+$' > /dev/null; then
+                INSIDE_DST_IPV4="$INSIDE_DST_IPV4/30";
+            fi;
+
+            MARK=${!MARK-100}
+            MTU=${!MTU-1419}
+
+            # Create the device and set the end-to-end link addresses and MTU.
+            ip link add "$DEVICE" type vti local "$OUTSIDE_SRC_IPV4" \
+                remote "$OUTSIDE_DST_IPV4" key "$MARK" || exit 1
+            ip address add "$INSIDE_SRC_IPV4" remote "$INSIDE_DST_IPV4" dev "$DEVICE" || \
+                { ip link delete "$DEVICE"; exit 1; }
+            ip link set "$DEVICE" up mtu $MTU || { ip link delete "$DEVICE"; exit 1; }
+
+            # Clamp maximum segment size
+            iptables --wait --table mangle --append FORWARD --out-interface "$DEVICE" \
+                --protocol tcp --tcp-flags SYN,RST SYN --jump TCPMSS --clamp-mss-to-pmtu
+
+            # Mark incoming packets so they traverse the VTI adapter
+            iptables --wait --table mangle --append INPUT --protocol esp \
+                --source "$OUTSIDE_DST_IPV4"/32 --destination "$OUTSIDE_SRC_IPV4" \
+                --jump MARK --set-xmark "$MARK"
+
+            # Disable IPsec SPD and allow asymmetric routing.
+            SYSCTL_DEVICE="$(echo "$DEVICE" | sed -e 's/\./\//g')"
+            sysctl net.ipv4.conf.$SYSCTL_DEVICE.disable_policy=1 > /dev/null
+            sysctl net.ipv4.conf.$SYSCTL_DEVICE.rp_filter=2 > /dev/null
+
+            exec /etc/sysconfig/network-scripts/ifup-post $CONFIG $2
+            .EOF
+            cat > /etc/sysconfig/network-scripts/ifdown-awsvpn <<".EOF"
+            #!/bin/bash
+            # Bring down an AWS VPN interface.
+
+            . /etc/init.d/functions
+            cd /etc/sysconfig/network-scripts
+            . ./network-functions
+            [ -f ../network ] && . ../network
+            CONFIG=$1
+            need_config "$CONFIG"
+            source_config
+
+            check_device_down "$DEVICE" && exit 0
+
+            MARK=${!MARK-100}
+
+            # Remove iptables rules
+            iptables --wait --table mangle --delete INPUT --protocol esp \
+                --source "$OUTSIDE_DST_IPV4"/32 --destination "$OUTSIDE_SRC_IPV4" \
+                --jump MARK --set-xmark "$MARK"
+
+            iptables --wait --table mangle --delete FORWARD --out-interface "$DEVICE" \
+                --protocol tcp --tcp-flags SYN,RST SYN --jump TCPMSS --clamp-mss-to-pmtu
+
+            ip link delete "$DEVICE"
+            retcode=$?
+
+            if [ $retcode = 0 ]; then
+                /etc/sysconfig/network-scripts/ifdown-post $CONFIG
+            fi;
+
+            # Don't use $?; indicate whether ip link delete succeeded instead.
+            exit $retcode
+            .EOF
+            REGION="${AWS::Region}"
+            VPN_ID="${rSourceTargetVpn}"
+            TARGET_VPC_CIDR="${pTargetVpcCidr}"
+            # Enable the Extra Packages for Enterprise Linux (EPEL) repository, where
+            # strongSwan resides.
+            amazon-linux-extras install -y epel
+            yum install -y strongswan iptables-services
+
+            # Configure system settings (sysctl)
+            cat >> /etc/sysctl.conf <<.EOF
+            # Allow port forwarding -- we're a router.
+            net.ipv4.ip_forward = 1
+
+            # Disable crypto transformations on the physical interface
+            net.ipv4.conf.eth0.disable_xfrm = 1
+
+            # Disables IPsec policy (SPD) on the physical interface
+            net.ipv4.conf.eth0.disable_policy = 1
+            .EOF
+
+            chmod 755 /etc/sysconfig/network-scripts/ifup-awsvpn
+            chmod 755 /etc/sysconfig/network-scripts/ifdown-awsvpn
+
+            #### VPN configuration
+
+            # Get VPN parameters
+            orig_umask=$(umask)
+            umask 077
+            aws --output text --region "$REGION" ec2 describe-vpn-connections \
+              --vpn-connection-id "$VPN_ID" \
+              --query 'VpnConnections[0].CustomerGatewayConfiguration' > /etc/$VPN_ID.xml
+            umask $orig_umask
+
+            local_ipv4=$(curl -s http://169.254.169.254/2018-09-24/meta-data/local-ipv4)
+
+            tun1_cgw_in_addr=$(xmllint --xpath '//customer_gateway[1]/tunnel_inside_address/ip_address/text()' /etc/$VPN_ID.xml)
+            tun2_cgw_in_addr=$(xmllint --xpath '//customer_gateway[2]/tunnel_inside_address/ip_address/text()' /etc/$VPN_ID.xml)
+
+            tun1_vgw_in_addr=$(xmllint --xpath '//vpn_gateway[1]/tunnel_inside_address/ip_address/text()' /etc/$VPN_ID.xml)
+            tun2_vgw_in_addr=$(xmllint --xpath '//vpn_gateway[2]/tunnel_inside_address/ip_address/text()' /etc/$VPN_ID.xml)
+            tun1_vgw_out_addr=$(xmllint --xpath '//vpn_gateway[1]/tunnel_outside_address/ip_address/text()' /etc/$VPN_ID.xml)
+            tun2_vgw_out_addr=$(xmllint --xpath '//vpn_gateway[2]/tunnel_outside_address/ip_address/text()' /etc/$VPN_ID.xml)
+
+            tun1_psk=$(xmllint --xpath '//ike[1]/pre_shared_key/text()' /etc/$VPN_ID.xml)
+            tun2_psk=$(xmllint --xpath '//ike[2]/pre_shared_key/text()' /etc/$VPN_ID.xml)
+
+            # Write strongSwan configuration files
+            cat > /etc/strongswan/$VPN_ID.conf <<.EOF
+            conn awsvpn1.common
+                auto = start
+                left = $local_ipv4
+                type = tunnel
+                leftauth = psk
+                rightauth = psk
+                keyexchange = ikev2
+                ike = aes256-sha256-modp2048
+                ikelifetime = 8h
+                esp = aes256-sha256-modp2048
+                lifetime = 1h
+                keyingtries = %forever
+                leftsubnet = 0.0.0.0/0
+                rightsubnet = $TARGET_VPC_CIDR
+                dpddelay = 10s
+                dpdtimeout = 30s
+                dpdaction = restart
+
+            conn awsvpn1.1
+                also = awsvpn1.common
+                right = $tun1_vgw_out_addr
+                mark = 101
+
+            conn awsvpn1.2
+                also = awsvpn1.common
+                right = $tun2_vgw_out_addr
+                mark = 102
+            .EOF
+
+            cat > /etc/strongswan/ipsec.conf <<.EOF
+            config setup
+                uniqueids = no
+
+            include vpn*.conf
+            .EOF
+
+            umask 077
+            cat > /etc/strongswan/$VPN_ID.secrets <<.EOF
+            $local_ipv4 $tun1_vgw_out_addr : PSK "$tun1_psk"
+            $local_ipv4 $tun2_vgw_out_addr : PSK "$tun2_psk"
+            .EOF
+
+            cat >> /etc/strongswan/ipsec.secrets <<.EOF
+            include vpn*.secrets
+            .EOF
+
+            # Don't allow Charon to configure routes or manage virtual IP address on VTI
+            # devices. See https://wiki.strongswan.org/projects/strongswan/wiki/RouteBasedVPN
+            mv /etc/strongswan/strongswan.d/charon.conf /etc/strongswan/strongswan.d/charon.orig
+            sed -E \
+                -e 's/\s*#?\s*install_routes\s*=.*/    install_routes = no/' \
+                -e 's/\s*#?\s*install_virtual_ip\s*=.*/    install_virtual_ip = no/' \
+                /etc/strongswan/strongswan.d/charon.orig > \
+                /etc/strongswan/strongswan.d/charon.conf
+
+            # Enable strongSwan at boot time and now
+            systemctl enable strongswan
+            systemctl start strongswan
+
+            # Configure VTI adapters
+            cat >> /etc/sysconfig/network-scripts/ifcfg-awsvpn1.1 <<.EOF
+            DEVICE=awsvpn1.1
+            DEVICETYPE=awsvpn
+            TYPE=awsvpn
+            ONBOOT=yes
+            BOOTPROTO=none
+            IPV6INIT=no
+            PEERDNS=no
+            OUTSIDE_SRC_IPV4=$local_ipv4
+            OUTSIDE_DST_IPV4=$tun1_vgw_out_addr
+            INSIDE_SRC_IPV4=$tun1_cgw_in_addr/30
+            INSIDE_DST_IPV4=$tun1_vgw_in_addr/30
+            MTU=1419
+            MARK=101
+            METRIC=100
+            .EOF
+
+            cat >> /etc/sysconfig/network-scripts/ifcfg-awsvpn1.2 <<.EOF
+            DEVICE=awsvpn1.2
+            DEVICETYPE=awsvpn
+            TYPE=awsvpn
+            ONBOOT=yes
+            BOOTPROTO=none
+            IPV6INIT=no
+            PEERDNS=no
+            OUTSIDE_SRC_IPV4=$local_ipv4
+            OUTSIDE_DST_IPV4=$tun2_vgw_out_addr
+            INSIDE_SRC_IPV4=$tun2_cgw_in_addr/30
+            INSIDE_DST_IPV4=$tun2_vgw_in_addr/30
+            MTU=1419
+            MARK=102
+            METRIC=200
+            .EOF
+
+            cat >> /etc/sysconfig/network-scripts/route-awsvpn1.1 <<.EOF
+            $TARGET_VPC_CIDR dev awsvpn1.1 metric 100
+            .EOF
+
+            cat >> /etc/sysconfig/network-scripts/route-awsvpn1.2 <<.EOF
+            $TARGET_VPC_CIDR dev awsvpn1.2 metric 200
+            .EOF
+
+            # Disable IPSec SPD and allow asymmetric routing on the VTI adapters.
+            cat >> /etc/sysctl.conf <<.EOF
+            net.ipv4.conf.awsvpn1/1.disable_policy=1
+            net.ipv4.conf.awsvpn1/2.disable_policy=1
+            net.ipv4.conf.awsvpn1/1.rp_filter=2
+            net.ipv4.conf.awsvpn1/2.rp_filter=2
+            .EOF
+            sysctl -p
+
+            ifup awsvpn1.1
+            ifup awsvpn1.2
+  rTargetVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pTargetVpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: VPN Test Target
+  rTargetVpcIpv6:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref rTargetVpc
+  rTargetSubnetA:
+    Type: AWS::EC2::Subnet
+    DependsOn: [ rTargetVpcIpv6 ]
+    Properties:
+      # AssignIpv6AddressOnCreati on: false # EC2/CFN bug: https://amzn.to/2wcS7hn
+      AvailabilityZone: !Select [0, !GetAZs { "Ref": "AWS::Region" }]
+      CidrBlock: !Select [0, !Cidr [!Ref pTargetVpcCidr, 2, 12]]
+      Ipv6CidrBlock: !Select [0, !Cidr [!Select [0, !GetAtt rTargetVpc.Ipv6CidrBlocks], 2, 64]]
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref rTargetVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Target A
+  rTargetSubnetB:
+    Type: AWS::EC2::Subnet
+    DependsOn: [ rTargetVpcIpv6 ]
+    Properties:
+      # AssignIpv6AddressOnCreation: false
+      AvailabilityZone: !Select [1, !GetAZs { "Ref": "AWS::Region" }]
+      CidrBlock: !Select [1, !Cidr [!Ref pTargetVpcCidr, 2, 12]]
+      Ipv6CidrBlock: !Select [1, !Cidr [!Select [0, !GetAtt rTargetVpc.Ipv6CidrBlocks], 2, 64]]
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref rTargetVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Target B
+  rTargetIgw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: VPN Test Target
+  rTargetIgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref rTargetVpc
+      InternetGatewayId: !Ref rTargetIgw
+  rTargetRouteTable: # CFN issue: https://amzn.to/2HPRzmG
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rTargetVpc
+      Tags:
+        - Key: Name
+          Value: VPN Test Target
+  rTargetRouteTableAssociationA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rTargetRouteTable
+      SubnetId: !Ref rTargetSubnetA
+  rTargetRouteTableAssociationB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rTargetRouteTable
+      SubnetId: !Ref rTargetSubnetB
+  rTargetEgressV4:
+    Type: AWS::EC2::Route
+    DependsOn: [ rTargetIgwAttachment ]
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      RouteTableId: !Ref rTargetRouteTable
+      GatewayId: !Ref rTargetIgw
+  rTargetEgressV6:
+    Type: AWS::EC2::Route
+    DependsOn: [ rTargetIgwAttachment ]
+    Properties:
+      DestinationIpv6CidrBlock: "::/0"
+      RouteTableId: !Ref rTargetRouteTable
+      GatewayId: !Ref rTargetIgw
+  rTargetToSourceV4:
+    Type: AWS::EC2::Route
+    DependsOn: [ rTargetVgwAttachment ]
+    Properties:
+      DestinationCidrBlock: !Ref pSourceVpcCidr
+      RouteTableId: !Ref rTargetRouteTable
+      GatewayId: !Ref rTargetVgw
+  rTargetToSourceV6:
+    Type: AWS::EC2::Route
+    DependsOn: [ rTargetVgwAttachment ]
+    Properties:
+      DestinationIpv6CidrBlock: !Select [0, !GetAtt rSourceVpc.Ipv6CidrBlocks]
+      RouteTableId: !Ref rTargetRouteTable
+      GatewayId: !Ref rTargetVgw
+  rTargetDebuggingSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: VPN Test Debugging
+      GroupDescription: "VPN Test Debugging -- allow SSH, ICMP"
+      VpcId: !Ref rTargetVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH from anywhere
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIpv6: "::/0"
+          Description: SSH from anywhere
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+          Description: ICMPv4 from anywhere
+        - IpProtocol: icmpv6
+          FromPort: -1
+          ToPort: -1
+          CidrIpv6: "::/0"
+          Description: ICMPv6 from anywhere
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          FromPort: 0
+          ToPort: 0
+          CidrIp: 0.0.0.0/0
+          Description: Egress anywhere
+        - IpProtocol: "-1"
+          FromPort: 0
+          ToPort: 0
+          CidrIpv6: "::/0"
+          Description: Egress anywhere
+  rTargetVgw:
+    Type: AWS::EC2::VPNGateway
+    Properties:
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: VPN Test VGW
+  rTargetVgwAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref rTargetVpc
+      VpnGatewayId: !Ref rTargetVgw
+  rSourceCgw:
+    Type: AWS::EC2::CustomerGateway
+    Properties:
+      BgpAsn: 65000
+      IpAddress: !Ref rCgwEip
+      Type: ipsec.1
+      Tags:
+        - Key: Name
+          Value: VPN Test CGW
+  rSourceTargetVpn:
+    Type: AWS::EC2::VPNConnection
+    Properties:
+      CustomerGatewayId: !Ref rSourceCgw
+      StaticRoutesOnly: true
+      Type: ipsec.1
+      VpnGatewayId: !Ref rTargetVgw
+      Tags:
+        - Key: Name
+          Value: VPN Test
+  rToSourceRoute:
+    Type: AWS::EC2::VPNConnectionRoute
+    Properties:
+      DestinationCidrBlock: !Ref pSourceVpcCidr
+      VpnConnectionId: !Ref rSourceTargetVpn
+  rTargetPingInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !If [cUseCustomAmi, !Ref pCustomAmi, !Ref pStandardAmi]
+      InstanceType: !Ref pTargetPingInstanceType
+      KeyName: !Ref pKeypair
+      Monitoring: true
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 20
+            VolumeType: gp2
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: true
+          GroupSet: [!Ref rTargetDebuggingSg]
+          Ipv6AddressCount: 1
+          SubnetId: !Ref rTargetSubnetA
+      Tags:
+        - Key: Name
+          Value: VPN Test Target
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -x
+          yum update -y
+          yum install -y ltrace python3 strace tcpdump trousers util-linux-user zsh
+          chsh -s /bin/zsh
+          chsh -s /bin/zsh ec2-user
+          if [[ ! -d /home/ec2-user ]]; then mkdir -p /home/ec2-user; chown 1000:1000 /home/ec2-user; fi
+          cat > /home/ec2-user/.zshrc <<.EOF
+          autoload -Uz compinit
+          compinit
+          PROMPT="%B%! %n@%m %3/%#%b "
+          export LESS=-XR
+          .EOF
+
+          cp /home/ec2-user/.zshrc /root/.zshrc
+          chown ec2-user:ec2-user /home/ec2-user/.zshrc || chown 1000:1000 /home/ec2-user/.zshrc
+          chown root:root /root/.zshrc
+Outputs:
+  oCgwIp:
+    Description: CGW instance IP address
+    Value: !Ref rCgwEip
+  oSourcePingPublicIp:
+    Description: Source ping instance public IP address
+    Value: !GetAtt rSourcePingInstance.PublicIp
+  oSourcePingPrivateIp:
+    Description: Source ping instance private IP address
+    Value: !GetAtt rSourcePingInstance.PrivateIp
+  oTargetPingPublicIp:
+    Description: Target ping instance public IP address
+    Value: !GetAtt rTargetPingInstance.PublicIp
+  oTargetPingPrivateIp:
+    Description: Target ping instance private IP address
+    Value: !GetAtt rTargetPingInstance.PrivateIp
+  oVpnId:
+    Description: VPN id
+    Value: !Ref rSourceTargetVpn
