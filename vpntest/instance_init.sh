@@ -14,4 +14,3 @@ export LESS=-XR
 cp /home/ec2-user/.zshrc /root/.zshrc
 chown ec2-user:ec2-user /home/ec2-user/.zshrc || chown 1000:1000 /home/ec2-user/.zshrc
 chown root:root /root/.zshrc
-

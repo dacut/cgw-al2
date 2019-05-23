@@ -42,7 +42,7 @@ tun1_psk=$(xmllint --xpath '//ike[1]/pre_shared_key/text()' /etc/$VPN_ID.xml)
 tun2_psk=$(xmllint --xpath '//ike[2]/pre_shared_key/text()' /etc/$VPN_ID.xml)
 
 # Write strongSwan configuration files
-cat > /etc/strongswan/${VPN_ID}.conf <<.EOF
+cat > /etc/strongswan/$VPN_ID.conf <<.EOF
 conn awsvpn1.common
     auto = start
     left = $local_ipv4
@@ -80,7 +80,7 @@ include vpn*.conf
 .EOF
 
 umask 077
-cat > /etc/strongswan/${VPN_ID}.secrets <<.EOF
+cat > /etc/strongswan/$VPN_ID.secrets <<.EOF
 $local_ipv4 $tun1_vgw_out_addr : PSK "$tun1_psk"
 $local_ipv4 $tun2_vgw_out_addr : PSK "$tun2_psk"
 .EOF

@@ -5,15 +5,13 @@
 cd /etc/sysconfig/network-scripts
 . ./network-functions
 [ -f ../network ] && . ../network
-CONFIG=${1}
-need_config "${CONFIG}"
+CONFIG=$1
+need_config "$CONFIG"
 source_config
 
 check_device_down "$DEVICE" && exit 0
 
-METRIC=${METRIC-100}
 MARK=${MARK-100}
-MTU=${MTU-1419}
 
 # Remove iptables rules
 iptables --wait --table mangle --delete INPUT --protocol esp \

@@ -5,8 +5,8 @@
 cd /etc/sysconfig/network-scripts
 . ./network-functions
 [ -f ../network ] && . ../network
-CONFIG=${1}
-need_config "${CONFIG}"
+CONFIG=$1
+need_config "$CONFIG"
 source_config
 
 if [ -z "$OUTSIDE_SRC_IPV4" ]; then
@@ -32,11 +32,11 @@ fi;
 # Make sure CIDR blocks are on the INSIDE_*_IPV4 variables; otherwise default
 # to /30.
 if ! echo "$INSIDE_SRC_IPV4" | egrep '/[0-9]+$' > /dev/null; then
-    INSIDE_SRC_IPV4="${INSIDE_SRC_IPV4}/30";
+    INSIDE_SRC_IPV4="$INSIDE_SRC_IPV4/30";
 fi;
 
 if ! echo "$INSIDE_DST_IPV4" | egrep '/[0-9]+$' > /dev/null; then
-    INSIDE_DST_IPV4="${INSIDE_DST_IPV4}/30";
+    INSIDE_DST_IPV4="$INSIDE_DST_IPV4/30";
 fi;
 
 MARK=${MARK-100}
@@ -63,4 +63,4 @@ SYSCTL_DEVICE="$(echo "$DEVICE" | sed -e 's/\./\//g')"
 sysctl net.ipv4.conf.$SYSCTL_DEVICE.disable_policy=1 > /dev/null
 sysctl net.ipv4.conf.$SYSCTL_DEVICE.rp_filter=2 > /dev/null
 
-exec /etc/sysconfig/network-scripts/ifup-post ${CONFIG} ${2}
+exec /etc/sysconfig/network-scripts/ifup-post $CONFIG $2
