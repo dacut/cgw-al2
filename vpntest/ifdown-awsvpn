@@ -1,0 +1,34 @@
+#!/bin/bash
+# Bring down an AWS VPN interface.
+
+. /etc/init.d/functions
+cd /etc/sysconfig/network-scripts
+. ./network-functions
+[ -f ../network ] && . ../network
+CONFIG=${1}
+need_config "${CONFIG}"
+source_config
+
+check_device_down "$DEVICE" && exit 0
+
+METRIC=${METRIC-100}
+MARK=${MARK-100}
+MTU=${MTU-1419}
+
+# Remove iptables rules
+iptables --wait --table mangle --delete INPUT --protocol esp \
+    --source "$OUTSIDE_DST_IPV4"/32 --destination "$OUTSIDE_SRC_IPV4" \
+    --jump MARK --set-xmark "$MARK"
+
+iptables --wait --table mangle --delete FORWARD --out-interface "$DEVICE" \
+    --protocol tcp --tcp-flags SYN,RST SYN --jump TCPMSS --clamp-mss-to-pmtu
+
+ip link delete "$DEVICE"
+retcode=$?
+
+if [ $retcode = 0 ]; then
+    /etc/sysconfig/network-scripts/ifdown-post $CONFIG
+fi;
+
+# Don't use $?; indicate whether ip link delete succeeded instead.
+exit $retcode
