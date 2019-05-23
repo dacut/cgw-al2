@@ -1,4 +1,4 @@
-resource "aws_vpc" "target_vpc" {
+resource "aws_vpc" "target" {
     cidr_block = "${var.target_vpc_cidr}"
     enable_dns_support = true
     enable_dns_hostnames = true
@@ -8,55 +8,67 @@ resource "aws_vpc" "target_vpc" {
     }
 }
 
-resource "aws_subnet" "target_subnet_a" {
-    vpc_id = "${aws_vpc.target_vpc.id}"
-    cidr_block = "${cidrsubnet(aws_vpc.target_vpc.cidr_block, 4, 0)}"
+resource "aws_subnet" "target_a" {
+    vpc_id = "${aws_vpc.target.id}"
+    cidr_block = "${cidrsubnet(aws_vpc.target.cidr_block, 4, 0)}"
     availability_zone = "${data.aws_availability_zones.available.names[0]}"
-    ipv6_cidr_block = "${cidrsubnet(aws_vpc.target_vpc.ipv6_cidr_block, 8, 0)}"
+    ipv6_cidr_block = "${cidrsubnet(aws_vpc.target.ipv6_cidr_block, 8, 0)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.target_vpc.id}"
+    vpc_id = "${aws_vpc.target.id}"
     tags = {
         Name = "VPN Test Target A"
     }
 }
 
-resource "aws_subnet" "target_subnet_b" {
-    vpc_id = "${aws_vpc.target_vpc.id}"
-    cidr_block = "${cidrsubnet(aws_vpc.target_vpc.cidr_block, 4, 1)}"
+resource "aws_subnet" "target_b" {
+    vpc_id = "${aws_vpc.target.id}"
+    cidr_block = "${cidrsubnet(aws_vpc.target.cidr_block, 4, 1)}"
     availability_zone = "${data.aws_availability_zones.available.names[1]}"
-    ipv6_cidr_block = "${cidrsubnet(aws_vpc.target_vpc.ipv6_cidr_block, 8, 1)}"
+    ipv6_cidr_block = "${cidrsubnet(aws_vpc.target.ipv6_cidr_block, 8, 1)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.target_vpc.id}"
+    vpc_id = "${aws_vpc.target.id}"
     tags = {
         Name = "VPN Test Target B"
     }
 }
 
-resource "aws_internet_gateway" "target_igw" {
-    vpc_id = "${aws_vpc.target_vpc.id}"
+resource "aws_internet_gateway" "target" {
+    vpc_id = "${aws_vpc.target.id}"
     tags = {
         Name = "VPN Test Target"
     }
 }
 
 resource "aws_route" "target_egress_v4" {
-    route_table_id = "${aws_vpc.target_vpc.default_route_table_id}"
+    route_table_id = "${aws_vpc.target.default_route_table_id}"
     destination_cidr_block = "0.0.0.0/0"
-    gateway_id = "${aws_internet_gateway.target_igw.id}"
+    gateway_id = "${aws_internet_gateway.target.id}"
 }
 
 resource "aws_route" "target_egress_v6" {
-    route_table_id = "${aws_vpc.target_vpc.default_route_table_id}"
+    route_table_id = "${aws_vpc.target.default_route_table_id}"
     destination_ipv6_cidr_block = "::/0"
-    gateway_id = "${aws_internet_gateway.target_igw.id}"
+    gateway_id = "${aws_internet_gateway.target.id}"
 }
 
-resource "aws_security_group" "target_vpc_debugging_sg" {
+resource "aws_route" "target_to_source_v4" {
+    route_table_id = "${aws_vpc.target.default_route_table_id}"
+    destination_cidr_block = "${var.source_vpc_cidr}"
+    gateway_id = "${aws_vpn_gateway.target.id}"
+}
+
+resource "aws_route" "target_to_source_v6" {
+    route_table_id = "${aws_vpc.target.default_route_table_id}"
+    destination_ipv6_cidr_block = "${aws_vpc.source.ipv6_cidr_block}"
+    gateway_id = "${aws_vpn_gateway.target.id}"
+}
+
+resource "aws_security_group" "target_debugging" {
     name = "VPN Test Debugging"
     description = "VPN Test Debugging -- allow SSH, ICMP"
-    vpc_id = "${aws_vpc.target_vpc.id}"
+    vpc_id = "${aws_vpc.target.id}"
 
     ingress {
         protocol = "tcp"
@@ -92,13 +104,46 @@ resource "aws_security_group" "target_vpc_debugging_sg" {
         description = "Egress anywhere"
     }
 }
-resource "aws_instance" "target_instance" {
+
+resource "aws_vpn_gateway" "target" {
+    vpc_id = "${aws_vpc.target.id}"
+    tags = {
+        Name = "VPN Test VGW"
+    }
+}
+
+resource "aws_customer_gateway" "source" {
+    ip_address = "${aws_eip.cgw.public_ip}"
+    type = "ipsec.1"
+    bgp_asn = 65000
+
+    tags = {
+        Name = "VPN Test CGW"
+    }
+}
+
+resource "aws_vpn_connection" "source_target" {
+    customer_gateway_id = "${aws_customer_gateway.source.id}"
+    vpn_gateway_id = "${aws_vpn_gateway.target.id}"
+    type = "ipsec.1"
+    static_routes_only = true
+    tags = {
+        Name = "VPN Test"
+    }
+}
+
+resource "aws_vpn_connection_route" "to_source" {
+    vpn_connection_id = "${aws_vpn_connection.source_target.id}"
+    destination_cidr_block = "${var.source_vpc_cidr}"
+}
+
+resource "aws_instance" "target_ping" {
     ami = "${data.aws_ami.amzn2.id}"
-    instance_type = "${var.target_instance_type}"
+    instance_type = "${var.target_ping_instance_type}"
     key_name = "${var.keypair}"
     monitoring = true
-    vpc_security_group_ids = ["${aws_security_group.target_vpc_debugging_sg.id}"]
-    subnet_id = "${aws_subnet.target_subnet_a.id}"
+    vpc_security_group_ids = ["${aws_security_group.target_debugging.id}"]
+    subnet_id = "${aws_subnet.target_a.id}"
     associate_public_ip_address = true
     ipv6_address_count = 1
     tags = {
@@ -113,4 +158,12 @@ resource "aws_instance" "target_instance" {
         volume_size = 20
         delete_on_termination = true
     }
+}
+
+output "vpn_id" {
+    value = "${aws_vpn_connection.source_target.id}"
+}
+
+output "target_ping_ip" {
+    value = "${aws_instance.target_ping.public_ip}"
 }

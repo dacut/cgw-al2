@@ -10,3 +10,5 @@
 
 # Terraform plans
 *.plan
+
+.vscode
