@@ -138,11 +138,11 @@ METRIC=200
 .EOF
 
 cat >> /etc/sysconfig/network-scripts/route-awsvpn1.1 <<.EOF
-$TARGET_VPC_CIDR dev awsvpn1.1 metric 100
+$TARGET_VPC_CIDR dev awsvpn1.1 metric 100 src $local_ipv4
 .EOF
 
 cat >> /etc/sysconfig/network-scripts/route-awsvpn1.2 <<.EOF
-$TARGET_VPC_CIDR dev awsvpn1.2 metric 200
+$TARGET_VPC_CIDR dev awsvpn1.2 metric 200 src $local_ipv4
 .EOF
 
 # Disable IPSec SPD and allow asymmetric routing on the VTI adapters.
