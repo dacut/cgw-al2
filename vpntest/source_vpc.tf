@@ -254,8 +254,12 @@ ${file("${path.module}/cgw_init.sh")}
 UDEOF
 }
 
-output "source_ping_ip" {
+output "source_ping_ip_external" {
     value = "${aws_instance.source_ping.public_ip}"
+}
+
+output "source_ping_ip_internal" {
+    value = "${aws_instance.source_ping.private_ip}"
 }
 
 output "cgw_ip" {

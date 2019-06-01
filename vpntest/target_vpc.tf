@@ -164,6 +164,10 @@ output "vpn_id" {
     value = "${aws_vpn_connection.source_target.id}"
 }
 
-output "target_ping_ip" {
+output "target_ping_ip_external" {
     value = "${aws_instance.target_ping.public_ip}"
+}
+
+output "target_ping_ip_internal" {
+    value = "${aws_instance.target_ping.private_ip}"
 }
