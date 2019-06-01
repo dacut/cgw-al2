@@ -56,7 +56,7 @@ conn awsvpn1.common
     lifetime = 1h
     keyingtries = %forever
     leftsubnet = 0.0.0.0/0
-    rightsubnet = $TARGET_VPC_CIDR
+    rightsubnet = 0.0.0.0/0
     dpddelay = 10s
     dpdtimeout = 30s
     dpdaction = restart
