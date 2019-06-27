@@ -10,7 +10,11 @@ provider "aws" {
     region = "${var.region}"
 }
 
-data "aws_availability_zones" "available" {}
+data "aws_availability_zones" "available" {
+    # use1-az3 is capacity impaired
+    blacklisted_zone_ids = ["use1-az3"]
+}
+
 data "aws_ami" "amzn2" {
     most_recent = true
     filter {
