@@ -15,7 +15,6 @@ resource "aws_subnet" "source_a" {
     ipv6_cidr_block = "${cidrsubnet(aws_vpc.source.ipv6_cidr_block, 8, 0)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.source.id}"
     tags = {
         Name = "VPN Test Source A"
     }
@@ -28,7 +27,6 @@ resource "aws_subnet" "source_b" {
     ipv6_cidr_block = "${cidrsubnet(aws_vpc.source.ipv6_cidr_block, 8, 1)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.source.id}"
     tags = {
         Name = "VPN Test Source B"
     }
@@ -175,7 +173,7 @@ resource "aws_instance" "source_ping" {
     volume_tags = {
         Name = "VPN Test Source"
     }
-    root_block_device = {
+    root_block_device {
         volume_type = "gp2"
         volume_size = 20
         delete_on_termination = true
@@ -234,7 +232,7 @@ resource "aws_instance" "cgw" {
     volume_tags = {
         Name = "VPN CGW"
     }
-    root_block_device = {
+    root_block_device {
         volume_type = "gp2"
         volume_size = 20
         delete_on_termination = true

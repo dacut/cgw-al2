@@ -15,7 +15,6 @@ resource "aws_subnet" "target_a" {
     ipv6_cidr_block = "${cidrsubnet(aws_vpc.target.ipv6_cidr_block, 8, 0)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.target.id}"
     tags = {
         Name = "VPN Test Target A"
     }
@@ -28,7 +27,6 @@ resource "aws_subnet" "target_b" {
     ipv6_cidr_block = "${cidrsubnet(aws_vpc.target.ipv6_cidr_block, 8, 1)}"
     map_public_ip_on_launch = true
     assign_ipv6_address_on_creation = true
-    vpc_id = "${aws_vpc.target.id}"
     tags = {
         Name = "VPN Test Target B"
     }
@@ -153,7 +151,7 @@ resource "aws_instance" "target_ping" {
     volume_tags = {
         Name = "VPN Test Target"
     }
-    root_block_device = {
+    root_block_device {
         volume_type = "gp2"
         volume_size = 20
         delete_on_termination = true
